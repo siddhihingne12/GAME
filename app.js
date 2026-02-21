@@ -711,6 +711,17 @@ document.addEventListener('DOMContentLoaded', () => {
     function initF1Game() {
         const f1Data = state.f1;
 
+        /* ── Spacebar State Machine ──
+           idle     → waiting to start
+           waiting  → lights active, waiting for lights out
+           react    → lights off, measuring reaction
+           finished → reaction recorded, can restart */
+        let f1State = 'idle';
+        let spaceHeld = false;        // debounce: ignore held key
+        let raceTimeout = null;       // setTimeout ID for lights-off delay
+        let lightInterval = null;     // setInterval ID for light sequence
+        let startTime = null;         // reaction measurement start
+
         mainContent.innerHTML = `
             ${gameToolbar('F1 Reflex')}
             <div class="view game-container">
@@ -727,6 +738,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     <button id="start-f1" class="btn-cta" style="width:auto; padding: 15px 50px;">
                         🚦 Start Racing
                     </button>
+                    <p id="space-hint" style="margin-top:12px; font-size:0.85rem; opacity:0.6; letter-spacing:1px;">
+                        ⌨️ Press <strong>SPACEBAR</strong> to start
+                    </p>
                     <div id="f1-result" class="hidden" style="margin-top:2rem;">
                         <div id="f1-leaderboard" class="glass" style="padding:1.5rem; border-radius:20px;"></div>
                     </div>
@@ -736,51 +750,136 @@ document.addEventListener('DOMContentLoaded', () => {
 
         attachToolbarListeners();
 
+        /* ── Reset UI for a new race ── */
         function raceAgain() {
+            // Clean up any pending timers
+            if (raceTimeout) { clearTimeout(raceTimeout); raceTimeout = null; }
+            if (lightInterval) { clearInterval(lightInterval); lightInterval = null; }
+
             document.getElementById('f1-result')?.classList.add('hidden');
             const startBtn = document.getElementById('start-f1');
+            const hintEl = document.getElementById('space-hint');
             if (startBtn) startBtn.style.display = '';
+            if (hintEl) { hintEl.style.display = ''; hintEl.textContent = '⌨️ Press SPACEBAR to start'; }
             [1, 2, 3, 4, 5].forEach(i => document.getElementById(`light-${i}`)?.classList.remove('on'));
             const statusEl = document.getElementById('f1-status');
-            if (statusEl) statusEl.textContent = '';
+            if (statusEl) { statusEl.textContent = ''; statusEl.style.color = ''; }
+            document.getElementById('react-btn')?.classList.add('hidden');
+
+            f1State = 'idle';
         }
 
-        document.getElementById('start-f1').addEventListener('click', () => {
+        /* ── Core: Start the race (lights sequence → GO) ── */
+        function handleStartRace() {
+            if (f1State !== 'idle') return;
+            f1State = 'waiting';
+
             const startBtn = document.getElementById('start-f1');
             const statusEl = document.getElementById('f1-status');
-            startBtn.style.display = 'none';
-            statusEl.textContent = 'Lights turning on…';
-            statusEl.style.color = '';
+            const hintEl = document.getElementById('space-hint');
+            if (startBtn) startBtn.style.display = 'none';
+            if (hintEl) hintEl.style.display = 'none';
+            if (statusEl) { statusEl.textContent = 'Lights turning on…'; statusEl.style.color = ''; }
 
             let i = 1;
-            const interval = setInterval(() => {
+            lightInterval = setInterval(() => {
                 if (i <= 5) {
                     document.getElementById(`light-${i}`)?.classList.add('on');
                     i++;
                 } else {
-                    clearInterval(interval);
-                    statusEl.textContent = 'Get ready…';
-                    const delay = 1000 + Math.random() * 2000;
-                    setTimeout(() => {
-                        [1, 2, 3, 4, 5].forEach(id => document.getElementById(`light-${id}`)?.classList.remove('on'));
-                        statusEl.innerHTML = '<span style="font-size:2rem;">🟢 GO!</span>';
+                    clearInterval(lightInterval);
+                    lightInterval = null;
+                    if (statusEl) statusEl.textContent = 'Get ready…';
 
-                        const startTime = Date.now();
+                    const delay = 1000 + Math.random() * 2000;
+                    raceTimeout = setTimeout(() => {
+                        raceTimeout = null;
+                        [1, 2, 3, 4, 5].forEach(id => document.getElementById(`light-${id}`)?.classList.remove('on'));
+                        if (statusEl) statusEl.innerHTML = '<span style="font-size:2rem;">🟢 GO!</span>';
+
+                        startTime = Date.now();
                         const reactBtn = document.getElementById('react-btn');
                         reactBtn?.classList.remove('hidden');
 
-                        const doReact = () => {
-                            const reactionTime = Date.now() - startTime;
-                            reactBtn?.classList.add('hidden');
-                            statusEl.textContent = '';
-                            showF1Result(reactionTime, raceAgain);
-                        };
+                        // Allow mouse click on REACT button too
+                        reactBtn?.addEventListener('click', handleReact, { once: true });
 
-                        reactBtn?.addEventListener('click', doReact, { once: true });
+                        f1State = 'react';
                     }, delay);
                 }
             }, 800);
-        });
+        }
+
+        /* ── Core: Record reaction time ── */
+        function handleReact() {
+            if (f1State !== 'react') return;
+            f1State = 'finished';
+
+            const reactionTime = Date.now() - startTime;
+            const reactBtn = document.getElementById('react-btn');
+            const statusEl = document.getElementById('f1-status');
+            reactBtn?.classList.add('hidden');
+            // Remove any leftover click listener
+            reactBtn?.removeEventListener('click', handleReact);
+            if (statusEl) statusEl.textContent = '';
+
+            showF1Result(reactionTime, raceAgain);
+        }
+
+        /* ── False start: pressed Space before lights went off ── */
+        function handleFalseStart() {
+            // Cancel the pending lights-off timeout
+            if (raceTimeout) { clearTimeout(raceTimeout); raceTimeout = null; }
+            if (lightInterval) { clearInterval(lightInterval); lightInterval = null; }
+
+            const statusEl = document.getElementById('f1-status');
+            if (statusEl) {
+                statusEl.innerHTML = '<span style="color:#ef4444; font-size:1.5rem; font-weight:800;">⚠️ FALSE START!</span>';
+            }
+
+            // Reset back to idle after a brief pause
+            setTimeout(() => raceAgain(), 1500);
+        }
+
+        /* ── Keyboard handler (Spacebar) ── */
+        function onKeyDown(e) {
+            if (e.code !== 'Space') return;
+            e.preventDefault();               // prevent page scroll
+            if (spaceHeld) return;             // debounce held key
+            spaceHeld = true;
+
+            switch (f1State) {
+                case 'idle': handleStartRace(); break;
+                case 'waiting': handleFalseStart(); break;
+                case 'react': handleReact(); break;
+                case 'finished': raceAgain(); break;
+            }
+        }
+
+        function onKeyUp(e) {
+            if (e.code === 'Space') spaceHeld = false;
+        }
+
+        // Attach global keyboard listeners
+        document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('keyup', onKeyUp);
+
+        /* ── Cleanup listeners when navigating away ── */
+        function cleanupF1Listeners() {
+            document.removeEventListener('keydown', onKeyDown);
+            document.removeEventListener('keyup', onKeyUp);
+            if (raceTimeout) clearTimeout(raceTimeout);
+            if (lightInterval) clearInterval(lightInterval);
+        }
+
+        // Hook cleanup into the toolbar back/home buttons
+        const backBtn = mainContent.querySelector('.toolbar-back');
+        const homeBtn = mainContent.querySelector('.toolbar-home');
+        backBtn?.addEventListener('click', cleanupF1Listeners);
+        homeBtn?.addEventListener('click', cleanupF1Listeners);
+
+        // Existing button click → calls the same handler
+        document.getElementById('start-f1').addEventListener('click', handleStartRace);
     }
 
     function showF1Result(time, replayCallback) {
