@@ -16,8 +16,17 @@ CORS(app)
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///memory_master.db")
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Disable static file caching in dev
 
 db = SQLAlchemy(app)
+
+# Prevent browser caching during development
+@app.after_request
+def add_no_cache_headers(response):
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 # Models
 class User(db.Model):
